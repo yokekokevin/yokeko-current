@@ -495,7 +495,7 @@ fetchAndRender();
 setInterval(fetchAndRender, 5 * 60 * 1000);
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 </script>
 
