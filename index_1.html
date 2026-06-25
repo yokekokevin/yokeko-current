@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Currents</title>
+<meta name="description" content="Real-time current speed at Yokeko Point and Deception Pass Narrows">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Currents">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #f9f9f7;
+    color: #1a1a1a;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0;
+  }
+
+  header {
+    width: 100%;
+    padding: 16px 20px 14px;
+    background: #fff;
+    border-bottom: 0.5px solid #e0ddd6;
+  }
+
+  .toggle-wrap {
+    display: flex;
+    background: #f2f0eb;
+    border-radius: 10px;
+    padding: 3px;
+    gap: 2px;
+  }
+
+  .toggle-btn {
+    flex: 1;
+    border: none;
+    background: transparent;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 400;
+    color: #888;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s, color 0.15s;
+    line-height: 1.3;
+  }
+
+  .toggle-btn .station-name {
+    display: block;
+    font-weight: 500;
+    font-size: 14px;
+    color: inherit;
+  }
+
+  .toggle-btn .station-sub {
+    display: block;
+    font-size: 11px;
+    margin-top: 1px;
+    opacity: 0.7;
+  }
+
+  .toggle-btn.active {
+    background: #fff;
+    color: #1a1a1a;
+    box-shadow: 0 0.5px 2px rgba(0,0,0,0.08);
+  }
+
+  .toggle-btn.active .station-name { color: #1a1a1a; }
+
+  .main-card {
+    background: #fff;
+    border-radius: 16px;
+    border: 0.5px solid #e0ddd6;
+    padding: 28px 28px 24px;
+    margin: 16px 20px 0;
+    width: calc(100% - 40px);
+    max-width: 420px;
+  }
+
+  .direction-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .direction-label.flood { color: #1D9E75; }
+  .direction-label.ebb   { color: #D85A30; }
+  .direction-label.slack { color: #888780; }
+
+  .speed-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .speed-value {
+    font-size: 72px;
+    font-weight: 300;
+    line-height: 1;
+    letter-spacing: -2px;
+    color: #1a1a1a;
+  }
+
+  .speed-unit {
+    font-size: 20px;
+    color: #888;
+    font-weight: 400;
+  }
+
+  .trend {
+    font-size: 13px;
+    color: #999;
+    margin-top: 6px;
+    min-height: 18px;
+  }
+
+  .divider {
+    border: none;
+    border-top: 0.5px solid #e8e6e0;
+    margin: 20px 0;
+  }
+
+  .next-events {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .event-cell {
+    background: #f5f4f0;
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  .event-label {
+    font-size: 11px;
+    color: #999;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .event-time {
+    font-size: 17px;
+    font-weight: 500;
+    color: #1a1a1a;
+  }
+
+  .event-speed {
+    font-size: 12px;
+    color: #888;
+    margin-top: 2px;
+  }
+
+  .mini-bar-wrap {
+    margin: 20px 0 0;
+    position: relative;
+    height: 48px;
+  }
+
+  .mini-bar-track {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: #eeece7;
+    border-radius: 2px;
+    overflow: visible;
+  }
+
+  .mini-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  .mini-bar-fill.flood { background: #1D9E75; }
+  .mini-bar-fill.ebb   { background: #D85A30; }
+  .mini-bar-fill.slack { background: #c0bdb5; }
+
+  .mini-bar-cursor {
+    position: absolute;
+    bottom: -4px;
+    width: 2px;
+    height: 12px;
+    background: #1a1a1a;
+    border-radius: 1px;
+    transform: translateX(-50%);
+  }
+
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 20px 0;
+    width: calc(100% - 40px);
+    max-width: 420px;
+  }
+
+  .refresh-btn {
+    flex: 1;
+    background: #fff;
+    border: 0.5px solid #e0ddd6;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14px;
+    color: #555;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .refresh-btn:active { background: #f2f0eb; }
+
+  .updated-time {
+    flex: 1;
+    font-size: 12px;
+    color: #aaa;
+    text-align: right;
+    padding-right: 4px;
+  }
+
+  .loading-state, .error-state {
+    padding: 60px 20px;
+    text-align: center;
+    color: #999;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .error-state { color: #c0603a; }
+
+  .spinner {
+    width: 28px;
+    height: 28px;
+    border: 2px solid #e0ddd6;
+    border-top-color: #888;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin: 0 auto 16px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .install-banner {
+    background: #f0f8f5;
+    border: 0.5px solid #9FE1CB;
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin: 14px 20px 0;
+    width: calc(100% - 40px);
+    max-width: 420px;
+    font-size: 13px;
+    color: #0F6E56;
+    line-height: 1.5;
+    display: none;
+  }
+
+  .install-banner strong { font-weight: 500; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="toggle-wrap" role="group" aria-label="Select station">
+    <button class="toggle-btn active" id="btn-yokeko" onclick="switchStation('PUG1629')" aria-pressed="true">
+      <span class="station-name">Yokeko Point</span>
+      <span class="station-sub">7 ft depth</span>
+    </button>
+    <button class="toggle-btn" id="btn-deception" onclick="switchStation('PUG1701')" aria-pressed="false">
+      <span class="station-name">Deception Pass</span>
+      <span class="station-sub">Narrows</span>
+    </button>
+  </div>
+</header>
+
+<div id="content">
+  <div class="loading-state">
+    <div class="spinner"></div>
+    Fetching current data…
+  </div>
+</div>
+
+<div class="status-row" id="status-row" style="display:none">
+  <button class="refresh-btn" onclick="fetchAndRender()" aria-label="Refresh">
+    ↻ Refresh
+  </button>
+  <div class="updated-time" id="updated-time"></div>
+</div>
+
+<div class="install-banner" id="install-banner">
+  <strong>Add to home screen</strong> — tap the share button in your browser, then "Add to Home Screen" for one-tap access.
+</div>
+
+<script>
+const API_BASE = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
+
+const STATIONS = {
+  'PUG1629': { label: 'Yokeko Point', btnId: 'btn-yokeko' },
+  'PUG1701': { label: 'Deception Pass Narrows', btnId: 'btn-deception' }
+};
+
+let activeStation = 'PUG1629';
+
+function switchStation(id) {
+  if (id === activeStation) return;
+  activeStation = id;
+  Object.entries(STATIONS).forEach(([sid, cfg]) => {
+    const btn = document.getElementById(cfg.btnId);
+    btn.classList.toggle('active', sid === id);
+    btn.setAttribute('aria-pressed', sid === id ? 'true' : 'false');
+  });
+  fetchAndRender();
+}
+
+function fmtTime(dateStr) {
+  const d = new Date(dateStr.replace(' ', 'T'));
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function fmtUpdated(d) {
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+}
+
+function buildUrl(station) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const fmt = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+  const start = new Date(now); start.setDate(start.getDate() - 1);
+  const end   = new Date(now); end.setDate(end.getDate() + 2);
+  return `${API_BASE}?begin_date=${fmt(start)}&end_date=${fmt(end)}&station=${station}&product=currents_predictions&time_zone=lst_ldt&interval=MAX_SLACK&units=english&application=yokeko_current_app&format=json`;
+}
+
+function parseEvents(data) {
+  if (!data.current_predictions || !data.current_predictions.cp) return null;
+  return data.current_predictions.cp.map(e => ({
+    t: new Date(e.Time.replace(' ','T')),
+    raw: e.Time,
+    speed: parseFloat(e.Velocity_Major),
+    type: e.Type
+  }));
+}
+
+function classifyEvent(e) {
+  if (e.type === 'slack') return 'slack';
+  return e.speed > 0 ? 'flood' : 'ebb';
+}
+
+function interpolateSpeed(before, after, now) {
+  const t0 = before.t.getTime();
+  const t1 = after.t.getTime();
+  const tn = now.getTime();
+  const fraction = (tn - t0) / (t1 - t0);
+  const s0 = before.speed;
+  const s1 = after.speed;
+  return s0 + (s1 - s0) * (0.5 - 0.5 * Math.cos(Math.PI * fraction));
+}
+
+function render(events) {
+  const now = new Date();
+  const past   = events.filter(e => e.t <= now);
+  const future = events.filter(e => e.t > now);
+
+  if (past.length === 0 || future.length === 0) {
+    showError('Not enough data to calculate current speed. Try refreshing.');
+    return;
+  }
+
+  const before = past[past.length - 1];
+  const after  = future[0];
+  const next2  = future.length > 1 ? future[1] : null;
+
+  const rawSpeed = interpolateSpeed(before, after, now);
+  const absSpeed = Math.abs(rawSpeed);
+  const direction = absSpeed < 0.15 ? 'slack'
+                  : rawSpeed > 0    ? 'flood' : 'ebb';
+
+  const dirLabel = direction === 'flood' ? 'Flooding' :
+                   direction === 'ebb'   ? 'Ebbing'   : 'Near slack';
+
+  const maxForBar = Math.max(Math.abs(before.speed), Math.abs(after.speed), 5);
+  const barPct = Math.min(100, Math.round((absSpeed / maxForBar) * 100));
+
+  const trendSign = after.speed > before.speed ? '▲' : '▼';
+  const trendWord = after.speed > before.speed ? 'picking up' : 'easing';
+
+  const nextLabel = classifyEvent(after) === 'slack' ? 'Next slack' :
+                    after.speed > 0 ? 'Next max flood' : 'Next max ebb';
+  const nextSpeedStr = classifyEvent(after) === 'slack' ? '≈ 0 kts'
+                     : `${Math.abs(after.speed).toFixed(1)} kts`;
+
+  const next2Label = next2 ? (classifyEvent(next2) === 'slack' ? 'Then slack' :
+                    next2.speed > 0 ? 'Then max flood' : 'Then max ebb') : '';
+  const next2SpeedStr = next2 ? (classifyEvent(next2) === 'slack' ? '≈ 0 kts'
+                     : `${Math.abs(next2.speed).toFixed(1)} kts`) : '';
+
+  const minsToNext = Math.round((after.t - now) / 60000);
+  const hoursToNext = Math.floor(minsToNext / 60);
+  const remainMins = minsToNext % 60;
+  const countdownStr = hoursToNext > 0
+    ? `${hoursToNext}h ${remainMins}m`
+    : `${remainMins}m`;
+
+  const cursorLeft = Math.round(
+    ((now - before.t) / (after.t - before.t)) * 100
+  );
+
+  document.getElementById('content').innerHTML = `
+    <div class="main-card">
+      <div class="direction-label ${direction}">${dirLabel}</div>
+      <div class="speed-row">
+        <div class="speed-value">${absSpeed.toFixed(1)}</div>
+        <div class="speed-unit">kts</div>
+      </div>
+      <div class="trend">${trendSign} ${trendWord} — ${countdownStr} to ${nextLabel.toLowerCase()}</div>
+
+      <div class="mini-bar-wrap">
+        <div class="mini-bar-track">
+          <div class="mini-bar-fill ${direction}" style="width:${barPct}%"></div>
+          <div class="mini-bar-cursor" style="left:${cursorLeft}%"></div>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="next-events">
+        <div class="event-cell">
+          <div class="event-label">${nextLabel}</div>
+          <div class="event-time">${fmtTime(after.raw)}</div>
+          <div class="event-speed">${nextSpeedStr}</div>
+        </div>
+        ${next2 ? `
+        <div class="event-cell">
+          <div class="event-label">${next2Label}</div>
+          <div class="event-time">${fmtTime(next2.raw)}</div>
+          <div class="event-speed">${next2SpeedStr}</div>
+        </div>` : '<div></div>'}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('updated-time').textContent = `Updated ${fmtUpdated(now)}`;
+  document.getElementById('status-row').style.display = 'flex';
+}
+
+function showError(msg) {
+  document.getElementById('content').innerHTML = `<div class="error-state">${msg}</div>`;
+  document.getElementById('status-row').style.display = 'flex';
+}
+
+async function fetchAndRender() {
+  document.getElementById('content').innerHTML = `
+    <div class="loading-state"><div class="spinner"></div>Fetching…</div>
+  `;
+  document.getElementById('status-row').style.display = 'none';
+
+  try {
+    const url = buildUrl(activeStation);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message || 'NOAA error');
+    const events = parseEvents(data);
+    if (!events || events.length === 0) throw new Error('No prediction data returned.');
+    render(events);
+  } catch(err) {
+    showError(`Couldn't load data.<br><small>${err.message}</small><br><br>Check your connection and try refreshing.`);
+  }
+}
+
+if (!window.matchMedia('(display-mode: standalone)').matches &&
+    !window.navigator.standalone) {
+  document.getElementById('install-banner').style.display = 'block';
+}
+
+fetchAndRender();
+setInterval(fetchAndRender, 5 * 60 * 1000);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+</script>
+
+</body>
+</html>
