@@ -89,11 +89,20 @@
   }
 
   .direction-label {
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.1em;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .direction-arrow {
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1;
   }
 
   .direction-label.flood { color: #1D9E75; }
@@ -393,8 +402,13 @@ function render(events) {
   const direction = absSpeed < 0.15 ? 'slack'
                   : rawSpeed > 0    ? 'flood' : 'ebb';
 
-  const dirLabel = direction === 'flood' ? 'Flooding' :
-                   direction === 'ebb'   ? 'Ebbing'   : 'Near slack';
+  const arrowLeft  = `<svg width="22" height="16" viewBox="0 0 22 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle;margin-right:4px;position:relative;top:2px"><line x1="21" y1="8" x2="1" y2="8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><polyline points="9,1 1,8 9,15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const arrowRight = `<svg width="22" height="16" viewBox="0 0 22 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle;margin-left:4px;position:relative;top:2px"><line x1="1" y1="8" x2="21" y2="8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><polyline points="13,1 21,8 13,15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const dirLabel = direction === 'flood'
+    ? `${arrowLeft} Flooding`
+    : direction === 'ebb'
+    ? `Ebbing ${arrowRight}`
+    : 'Near slack';
 
   const maxForBar = Math.max(Math.abs(before.speed), Math.abs(after.speed), 5);
   const barPct = Math.min(100, Math.round((absSpeed / maxForBar) * 100));
