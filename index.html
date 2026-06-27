@@ -284,6 +284,66 @@
   }
 
   .install-banner strong { font-weight: 500; }
+
+  /* Transit / docking window panel */
+  .window-card {
+    border-radius: 16px;
+    border: 0.5px solid;
+    padding: 16px 20px;
+    margin: 12px 20px 0;
+    width: calc(100% - 40px);
+    max-width: 420px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .window-card.go {
+    background: #f0fdf8;
+    border-color: #9FE1CB;
+  }
+
+  .window-card.no-go {
+    background: #fff8f5;
+    border-color: #f0c4b0;
+  }
+
+  .window-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .window-card.go  .window-dot { background: #1D9E75; }
+  .window-card.no-go .window-dot { background: #D85A30; }
+
+  .window-text {
+    flex: 1;
+  }
+
+  .window-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+
+  .window-card.go    .window-label { color: #0F6E56; }
+  .window-card.no-go .window-label { color: #a04020; }
+
+  .window-detail {
+    font-size: 15px;
+    font-weight: 400;
+    color: #1a1a1a;
+  }
+
+  .window-time {
+    font-size: 12px;
+    color: #888;
+    margin-top: 2px;
+  }
 </style>
 </head>
 <body>
@@ -307,6 +367,8 @@
     Fetching current data…
   </div>
 </div>
+
+<div id="window-panel"></div>
 
 <div class="status-row" id="status-row" style="display:none">
   <button class="refresh-btn" onclick="fetchAndRender()" aria-label="Refresh">
@@ -383,6 +445,112 @@ function interpolateSpeed(before, after, now) {
   return s0 + (s1 - s0) * (0.5 - 0.5 * Math.cos(Math.PI * fraction));
 }
 
+// Station-specific comfort thresholds
+const THRESHOLDS = {
+  'PUG1629': { label: 'Docking',  check: (raw) => raw <= 1.0 },  // ebb always ok, flood ≤ 1.0 kt
+  'PUG1701': { label: 'Transit',  check: (raw) => Math.abs(raw) <= 4.0 }
+};
+
+// Walk cosine curve across ALL event pairs (including current one) to find next threshold crossing
+function findThresholdCrossing(events, currentlyOk, thresholdCheck) {
+  const now = Date.now();
+  const STEP = 60 * 1000;
+
+  // Include the event just before now as seg0 so we scan the current segment too
+  const pastEvents   = events.filter(e => e.t.getTime() <= now);
+  const futureEvents = events.filter(e => e.t.getTime() >  now);
+  if (pastEvents.length === 0 || futureEvents.length === 0) return null;
+
+  // Build full sequence: last past event + all future events
+  const anchors = [pastEvents[pastEvents.length - 1], ...futureEvents];
+
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const seg0 = anchors[i];
+    const seg1 = anchors[i + 1];
+    const t0 = seg0.t.getTime();
+    const t1 = seg1.t.getTime();
+    const s0 = seg0.speed;
+    const s1 = seg1.speed;
+    const startT = Math.max(now + STEP, t0 + STEP);
+
+    for (let t = startT; t <= t1; t += STEP) {
+      const frac = (t - t0) / (t1 - t0);
+      const spd  = s0 + (s1 - s0) * (0.5 - 0.5 * Math.cos(Math.PI * frac));
+      const ok   = thresholdCheck(spd);
+      if (ok !== currentlyOk) return new Date(t);
+    }
+    // Do NOT update currentlyOk — always compare against current state
+  }
+  return null;
+}
+
+function fmtCountdown(ms) {
+  const totalMins = Math.round(ms / 60000);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function fmtClock(date) {
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function renderWindowPanel(events, rawSpeed, station) {
+  const cfg = THRESHOLDS[station];
+  if (!cfg) { document.getElementById('window-panel').innerHTML = ''; return; }
+
+  const now = Date.now();
+  const isOk = cfg.check(rawSpeed);
+  const crossing = findThresholdCrossing(events, isOk, cfg.check);
+  const panel = document.getElementById('window-panel');
+
+  if (isOk) {
+    if (crossing) {
+      const remaining = fmtCountdown(crossing - now);
+      panel.innerHTML = `
+        <div class="window-card go">
+          <div class="window-dot"></div>
+          <div class="window-text">
+            <div class="window-label">${cfg.label} window open</div>
+            <div class="window-detail">Open until ${fmtClock(crossing)}</div>
+            <div class="window-time">${remaining} remaining</div>
+          </div>
+        </div>`;
+    } else {
+      panel.innerHTML = `
+        <div class="window-card go">
+          <div class="window-dot"></div>
+          <div class="window-text">
+            <div class="window-label">${cfg.label} window open</div>
+            <div class="window-detail">No threshold crossing in forecast</div>
+          </div>
+        </div>`;
+    }
+  } else {
+    if (crossing) {
+      const wait = fmtCountdown(crossing - now);
+      panel.innerHTML = `
+        <div class="window-card no-go">
+          <div class="window-dot"></div>
+          <div class="window-text">
+            <div class="window-label">${cfg.label} window closed</div>
+            <div class="window-detail">Opens at ${fmtClock(crossing)}</div>
+            <div class="window-time">In ${wait}</div>
+          </div>
+        </div>`;
+    } else {
+      panel.innerHTML = `
+        <div class="window-card no-go">
+          <div class="window-dot"></div>
+          <div class="window-text">
+            <div class="window-label">${cfg.label} window closed</div>
+            <div class="window-detail">No opening found in forecast</div>
+          </div>
+        </div>`;
+    }
+  }
+}
+
 function render(events) {
   const now = new Date();
   const past   = events.filter(e => e.t <= now);
@@ -413,8 +581,8 @@ function render(events) {
   const maxForBar = Math.max(Math.abs(before.speed), Math.abs(after.speed), 5);
   const barPct = Math.min(100, Math.round((absSpeed / maxForBar) * 100));
 
-  const trendSign = after.speed > before.speed ? '▲' : '▼';
-  const trendWord = after.speed > before.speed ? 'picking up' : 'easing';
+  const trendSign = Math.abs(after.speed) > Math.abs(before.speed) ? '▲' : '▼';
+  const trendWord = Math.abs(after.speed) > Math.abs(before.speed) ? 'picking up' : 'easing';
 
   const nextLabel = classifyEvent(after) === 'slack' ? 'Next slack' :
                     after.speed > 0 ? 'Next max flood' : 'Next max ebb';
@@ -471,6 +639,7 @@ function render(events) {
     </div>
   `;
 
+  renderWindowPanel(events, rawSpeed, activeStation);
   document.getElementById('updated-time').textContent = `Updated ${fmtUpdated(now)}`;
   document.getElementById('status-row').style.display = 'flex';
 }
