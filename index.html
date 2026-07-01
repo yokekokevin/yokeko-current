@@ -382,7 +382,13 @@
 </div>
 
 <script>
-const API_BASE = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
+const DPAPI_BASE = 'https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/currentPredictionsDownload';
+
+// PUG1629 subordinate station redirects to PUG1701 — both use same bin
+const STATION_IDS = {
+  'PUG1629': 'PUG1701_18',
+  'PUG1701': 'PUG1701_18'
+};
 
 const STATIONS = {
   'PUG1629': { label: 'Yokeko Point', btnId: 'btn-yokeko' },
@@ -414,20 +420,76 @@ function fmtUpdated(d) {
 function buildUrl(station) {
   const now = new Date();
   const pad = n => String(n).padStart(2,'0');
-  const fmt = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+  const fmtDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const start = new Date(now); start.setDate(start.getDate() - 1);
-  const end   = new Date(now); end.setDate(end.getDate() + 2);
-  return `${API_BASE}?begin_date=${fmt(start)}&end_date=${fmt(end)}&station=${station}&product=currents_predictions&time_zone=lst_ldt&interval=MAX_SLACK&units=english&application=yokeko_current_app&format=json`;
+  const id = STATION_IDS[station];
+  return `${DPAPI_BASE}?id=${id}&start_date=${fmtDate(start)}&range=3&date_timeUnits=am/pm&interval=MAX_SLACK&time_zone=LST_LDT&units=1&format=txt`;
 }
 
-function parseEvents(data) {
-  if (!data.current_predictions || !data.current_predictions.cp) return null;
-  return data.current_predictions.cp.map(e => ({
-    t: new Date(e.Time.replace(' ','T')),
-    raw: e.Time,
-    speed: parseFloat(e.Velocity_Major),
-    type: e.Type
-  }));
+// Parse the DPAPI plain-text response format:
+// Date       Time (LST_LDT)  Speed (knots)
+// 2026-06-30 08:42 AM             0.00
+function parseEvents(text) {
+  const lines = text.split('\n').filter(l => !l.startsWith('#') && l.trim());
+  // Find header line and skip it
+  const dataLines = lines.filter(l => /^\d{4}-\d{2}-\d{2}/.test(l.trim()));
+  if (!dataLines.length) return null;
+
+  return dataLines.map(line => {
+    const parts = line.trim().split(/\s+/);
+    // Format: 2026-06-30 08:42 AM -4.33
+    const dateStr = parts[0];
+    const timeStr = parts[1] + ' ' + parts[2]; // "08:42 AM"
+    const speed   = parseFloat(parts[3]);
+    const isoStr  = `${dateStr}T${to24h(timeStr)}`;
+    const t       = new Date(isoStr);
+    const absSpd  = Math.abs(speed);
+    const type    = absSpd < 0.1 ? 'slack' : (speed > 0 ? 'flood' : 'ebb');
+    return { t, raw: `${dateStr} ${timeStr}`, speed, type };
+  }).filter(e => !isNaN(e.t));
+}
+
+function to24h(timeStr) {
+  // "08:42 AM" or "02:18 PM" → "08:42:00" or "14:18:00"
+  const [time, meridiem] = timeStr.split(' ');
+  let [h, m] = time.split(':').map(Number);
+  if (meridiem === 'PM' && h !== 12) h += 12;
+  if (meridiem === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
+}
+
+// ── Cache helpers ────────────────────────────────────────────────────────────
+const CACHE_KEY   = 'yokeko_events_v2';
+const CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+function saveCache(station, events) {
+  try {
+    const payload = {
+      station,
+      fetchedAt: Date.now(),
+      events: events.map(e => ({ t: e.t.getTime(), raw: e.raw, speed: e.speed, type: e.type }))
+    };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  } catch(e) { /* storage full or unavailable */ }
+}
+
+function loadCache(station) {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    if (payload.station !== station) return null;
+    if (Date.now() - payload.fetchedAt > CACHE_MAX_AGE_MS) return null;
+
+    const events = payload.events.map(e => ({ ...e, t: new Date(e.t) }));
+    const now = Date.now();
+    // Must have at least one event before now and one after now
+    const hasPast   = events.some(e => e.t.getTime() <= now);
+    const hasFuture = events.some(e => e.t.getTime() >  now);
+    if (!hasPast || !hasFuture) return null;
+
+    return events;
+  } catch(e) { return null; }
 }
 
 function classifyEvent(e) {
@@ -653,28 +715,48 @@ async function fetchOnce(station) {
   const url = buildUrl(station);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error.message || 'NOAA error');
-  const events = parseEvents(data);
+  const text = await resp.text();
+  if (text.includes('Error') || text.includes('error')) throw new Error('NOAA returned an error response');
+  const events = parseEvents(text);
   if (!events || events.length === 0) throw new Error('No prediction data returned.');
   return events;
 }
 
 async function fetchAndRender() {
+  const station = activeStation;
+
+  // Try cache first — show instantly with no spinner if available
+  const cached = loadCache(station);
+  if (cached) {
+    render(cached);
+    // Silently refresh in background if cache is over 1 hour old
+    const payload = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+    const age = Date.now() - (payload.fetchedAt || 0);
+    if (age > 60 * 60 * 1000) {
+      fetchOnce(station).then(events => {
+        if (station === activeStation) {
+          saveCache(station, events);
+          render(events);
+        }
+      }).catch(() => { /* silently ignore background refresh failure */ });
+    }
+    return;
+  }
+
+  // No usable cache — show loading spinner and fetch
   document.getElementById('content').innerHTML = `
     <div class="loading-state"><div class="spinner"></div>Fetching…</div>
   `;
   document.getElementById('status-row').style.display = 'none';
 
-  const station = activeStation;
   const MAX_ATTEMPTS = 3;
   let lastErr = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const events = await fetchOnce(station);
-      // If the station changed while we were retrying, drop this stale result
       if (station !== activeStation) return;
+      saveCache(station, events);
       render(events);
       return;
     } catch (err) {
