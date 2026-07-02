@@ -382,12 +382,16 @@
 </div>
 
 <script>
-const DPAPI_BASE = 'https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/currentPredictionsDownload';
+// Use NOAA's documented CO-OPS Data API. The older dpapi/.../currentPredictionsDownload
+// endpoint is used by NOAA's own web UI and is more likely to fail from GitHub Pages due to CORS.
+const DATA_API_BASE = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
 
-// PUG1629 subordinate station redirects to PUG1701 — both use same bin
-const STATION_IDS = {
-  'PUG1629': 'PUG1701_18',
-  'PUG1701': 'PUG1701_18'
+// Yokeko Point is its own NOAA subordinate prediction station.
+// Deception Pass Narrows uses the PUG1701 reference station, bin 18.
+// Keeping these separate avoids showing Deception Pass data when Yokeko is selected.
+const STATION_PARAMS = {
+  'PUG1629': { station: 'PUG1629' },
+  'PUG1701': { station: 'PUG1701', bin: '18' }
 };
 
 const STATIONS = {
@@ -409,7 +413,8 @@ function switchStation(id) {
 }
 
 function fmtTime(dateStr) {
-  const d = new Date(dateStr.replace(' ', 'T'));
+  const d = parseApiTime(dateStr);
+  if (isNaN(d)) return String(dateStr).replace(/^\d{4}-\d{2}-\d{2}\s+/, '');
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
@@ -419,25 +424,73 @@ function fmtUpdated(d) {
 
 function buildUrl(station, date) {
   const pad = n => String(n).padStart(2,'0');
-  const fmtDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  const id = STATION_IDS[station];
-  return `${DPAPI_BASE}?id=${id}&start_date=${fmtDate(date)}&range=1&date_timeUnits=am/pm&interval=MAX_SLACK&time_zone=LST_LDT&units=1&format=txt`;
+  // Data API wants YYYYMMDD. Date-only starts at local midnight at the station.
+  const fmtDate = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+  const cfg = STATION_PARAMS[station];
+  const params = new URLSearchParams({
+    begin_date: fmtDate(date),
+    range: '48',                         // hours from today's midnight; gives past + future anchors
+    station: cfg.station,
+    product: 'currents_predictions',
+    time_zone: 'lst_ldt',
+    interval: 'MAX_SLACK',
+    units: 'english',
+    application: 'Yokeko_Current_Widget',
+    format: 'json'
+  });
+  if (cfg.bin) params.set('bin', cfg.bin);
+  return `${DATA_API_BASE}?${params.toString()}`;
 }
 
-// Parse the DPAPI plain-text response format
-function parseText(text) {
-  return text.split('\n')
-    .filter(l => /^\d{4}-\d{2}-\d{2}/.test(l.trim()))
-    .map(line => {
-      const parts = line.trim().split(/\s+/);
-      const dateStr = parts[0];
-      const timeStr = parts[1] + ' ' + parts[2];
-      const speed   = parseFloat(parts[3]);
-      const isoStr  = `${dateStr}T${to24h(timeStr)}`;
-      const t       = new Date(isoStr);
-      const type    = Math.abs(speed) < 0.1 ? 'slack' : (speed > 0 ? 'flood' : 'ebb');
-      return { t, raw: `${dateStr} ${timeStr}`, speed, type };
-    }).filter(e => !isNaN(e.t));
+function parseApiTime(raw) {
+  const s = String(raw || '').trim();
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})(?:\s*([AP]M))?$/i);
+  if (m) {
+    const dateStr = m[1];
+    const timeStr = m[3] ? `${m[2]} ${m[3].toUpperCase()}` : `${m[2]}:00`;
+    return new Date(`${dateStr}T${m[3] ? to24h(timeStr) : timeStr}`);
+  }
+  return new Date(s.replace(' ', 'T'));
+}
+
+// Parse the documented CO-OPS Data API JSON response. Reference stations usually
+// provide signed Velocity_Major. Some subordinate stations may instead provide
+// Speed plus an event/direction label, so infer the sign when needed.
+function parseApiPayload(payload) {
+  if (payload && payload.error) {
+    throw new Error(payload.error.message || 'NOAA API returned an error.');
+  }
+
+  const cp = payload?.current_predictions?.cp
+          || payload?.current_predictions
+          || payload?.data
+          || [];
+
+  if (!Array.isArray(cp)) throw new Error('Unexpected NOAA response format.');
+
+  return cp.map(row => {
+    const raw = row.Time || row.t || row.time || row.DateTime || row.datetime;
+
+    let speed;
+    if (row.Velocity_Major !== undefined || row.Velocity !== undefined || row.v !== undefined) {
+      speed = parseFloat(row.Velocity_Major ?? row.Velocity ?? row.v);
+    } else {
+      // NOAA subordinate-station rows can be unsigned, with event text carrying ebb/flood.
+      const unsigned = parseFloat(row.Speed ?? row.speed ?? row.s);
+      const label = String(
+        row.Type ?? row.type ?? row.Event ?? row.event ?? row.Current_Direction ?? row.Direction ?? ''
+      ).toLowerCase();
+
+      if (label.includes('slack')) speed = 0;
+      else if (label.includes('ebb')) speed = -Math.abs(unsigned);
+      else if (label.includes('flood')) speed = Math.abs(unsigned);
+      else speed = unsigned;
+    }
+
+    const t = parseApiTime(raw);
+    const type = Math.abs(speed) < 0.1 ? 'slack' : (speed > 0 ? 'flood' : 'ebb');
+    return { t, raw, speed, type };
+  }).filter(e => !isNaN(e.t) && !isNaN(e.speed));
 }
 
 function to24h(timeStr) {
@@ -449,7 +502,7 @@ function to24h(timeStr) {
 }
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
-const CACHE_KEY     = 'yokeko_events_v3';
+const CACHE_KEY     = 'yokeko_events_v4';
 const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // 12 hours
 
 function saveCache(station, events) {
@@ -478,20 +531,13 @@ function loadCache(station) {
   } catch(e) { return null; }
 }
 
-// ── Fetch: two requests (today + tomorrow), merged and sorted ────────────────
+// ── Fetch: one 48-hour request, then sort and dedupe ────────────────────────
 async function fetchOnce(station) {
-  const now      = new Date();
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+  const r = await fetch(buildUrl(station, new Date()), { cache: 'no-store' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
 
-  const [r1, r2] = await Promise.all([
-    fetch(buildUrl(station, now)),
-    fetch(buildUrl(station, tomorrow))
-  ]);
-
-  if (!r1.ok || !r2.ok) throw new Error(`HTTP ${r1.status}/${r2.status}`);
-
-  const [t1, t2] = await Promise.all([r1.text(), r2.text()]);
-  const events = [...parseText(t1), ...parseText(t2)]
+  const payload = await r.json();
+  const events = parseApiPayload(payload)
     .sort((a, b) => a.t - b.t)
     .filter((e, i, arr) => i === 0 || e.t.getTime() !== arr[i-1].t.getTime()); // dedupe
 
@@ -758,6 +804,7 @@ async function fetchAndRender() {
       return;
     } catch (err) {
       lastErr = err;
+      console.warn('NOAA fetch failed', err, buildUrl(station, new Date()));
       if (attempt < MAX_ATTEMPTS) {
         document.getElementById('content').innerHTML = `
           <div class="loading-state"><div class="spinner"></div>Retrying… (${attempt}/${MAX_ATTEMPTS - 1})</div>
