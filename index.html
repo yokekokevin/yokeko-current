@@ -417,40 +417,30 @@ function fmtUpdated(d) {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
 }
 
-function buildUrl(station) {
-  const now = new Date();
+function buildUrl(station, date) {
   const pad = n => String(n).padStart(2,'0');
   const fmtDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  const start = new Date(now); start.setDate(start.getDate() - 1);
   const id = STATION_IDS[station];
-  return `${DPAPI_BASE}?id=${id}&start_date=${fmtDate(start)}&range=3&date_timeUnits=am/pm&interval=MAX_SLACK&time_zone=LST_LDT&units=1&format=txt`;
+  return `${DPAPI_BASE}?id=${id}&start_date=${fmtDate(date)}&range=1&date_timeUnits=am/pm&interval=MAX_SLACK&time_zone=LST_LDT&units=1&format=txt`;
 }
 
-// Parse the DPAPI plain-text response format:
-// Date       Time (LST_LDT)  Speed (knots)
-// 2026-06-30 08:42 AM             0.00
-function parseEvents(text) {
-  const lines = text.split('\n').filter(l => !l.startsWith('#') && l.trim());
-  // Find header line and skip it
-  const dataLines = lines.filter(l => /^\d{4}-\d{2}-\d{2}/.test(l.trim()));
-  if (!dataLines.length) return null;
-
-  return dataLines.map(line => {
-    const parts = line.trim().split(/\s+/);
-    // Format: 2026-06-30 08:42 AM -4.33
-    const dateStr = parts[0];
-    const timeStr = parts[1] + ' ' + parts[2]; // "08:42 AM"
-    const speed   = parseFloat(parts[3]);
-    const isoStr  = `${dateStr}T${to24h(timeStr)}`;
-    const t       = new Date(isoStr);
-    const absSpd  = Math.abs(speed);
-    const type    = absSpd < 0.1 ? 'slack' : (speed > 0 ? 'flood' : 'ebb');
-    return { t, raw: `${dateStr} ${timeStr}`, speed, type };
-  }).filter(e => !isNaN(e.t));
+// Parse the DPAPI plain-text response format
+function parseText(text) {
+  return text.split('\n')
+    .filter(l => /^\d{4}-\d{2}-\d{2}/.test(l.trim()))
+    .map(line => {
+      const parts = line.trim().split(/\s+/);
+      const dateStr = parts[0];
+      const timeStr = parts[1] + ' ' + parts[2];
+      const speed   = parseFloat(parts[3]);
+      const isoStr  = `${dateStr}T${to24h(timeStr)}`;
+      const t       = new Date(isoStr);
+      const type    = Math.abs(speed) < 0.1 ? 'slack' : (speed > 0 ? 'flood' : 'ebb');
+      return { t, raw: `${dateStr} ${timeStr}`, speed, type };
+    }).filter(e => !isNaN(e.t));
 }
 
 function to24h(timeStr) {
-  // "08:42 AM" or "02:18 PM" → "08:42:00" or "14:18:00"
   const [time, meridiem] = timeStr.split(' ');
   let [h, m] = time.split(':').map(Number);
   if (meridiem === 'PM' && h !== 12) h += 12;
@@ -459,18 +449,17 @@ function to24h(timeStr) {
 }
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
-const CACHE_KEY   = 'yokeko_events_v2';
-const CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+const CACHE_KEY     = 'yokeko_events_v3';
+const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // 12 hours
 
 function saveCache(station, events) {
   try {
-    const payload = {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
       station,
       fetchedAt: Date.now(),
       events: events.map(e => ({ t: e.t.getTime(), raw: e.raw, speed: e.speed, type: e.type }))
-    };
-    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
-  } catch(e) { /* storage full or unavailable */ }
+    }));
+  } catch(e) {}
 }
 
 function loadCache(station) {
@@ -479,17 +468,35 @@ function loadCache(station) {
     if (!raw) return null;
     const payload = JSON.parse(raw);
     if (payload.station !== station) return null;
-    if (Date.now() - payload.fetchedAt > CACHE_MAX_AGE_MS) return null;
-
+    if (Date.now() - payload.fetchedAt > CACHE_MAX_AGE) return null;
     const events = payload.events.map(e => ({ ...e, t: new Date(e.t) }));
     const now = Date.now();
-    // Must have at least one event before now and one after now
     const hasPast   = events.some(e => e.t.getTime() <= now);
     const hasFuture = events.some(e => e.t.getTime() >  now);
     if (!hasPast || !hasFuture) return null;
-
     return events;
   } catch(e) { return null; }
+}
+
+// ── Fetch: two requests (today + tomorrow), merged and sorted ────────────────
+async function fetchOnce(station) {
+  const now      = new Date();
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const [r1, r2] = await Promise.all([
+    fetch(buildUrl(station, now)),
+    fetch(buildUrl(station, tomorrow))
+  ]);
+
+  if (!r1.ok || !r2.ok) throw new Error(`HTTP ${r1.status}/${r2.status}`);
+
+  const [t1, t2] = await Promise.all([r1.text(), r2.text()]);
+  const events = [...parseText(t1), ...parseText(t2)]
+    .sort((a, b) => a.t - b.t)
+    .filter((e, i, arr) => i === 0 || e.t.getTime() !== arr[i-1].t.getTime()); // dedupe
+
+  if (!events.length) throw new Error('No prediction data returned.');
+  return events;
 }
 
 function classifyEvent(e) {
