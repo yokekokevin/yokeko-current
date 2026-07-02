@@ -718,16 +718,6 @@ function showError(msg) {
   document.getElementById('status-row').style.display = 'flex';
 }
 
-async function fetchOnce(station) {
-  const url = buildUrl(station);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const text = await resp.text();
-  if (text.includes('Error') || text.includes('error')) throw new Error('NOAA returned an error response');
-  const events = parseEvents(text);
-  if (!events || events.length === 0) throw new Error('No prediction data returned.');
-  return events;
-}
 
 async function fetchAndRender() {
   const station = activeStation;
